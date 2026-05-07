@@ -11,8 +11,8 @@ from aiogram.client.default import DefaultBotProperties
 
 from bot.ai_client import AIClient
 from bot.config import Settings
+from bot.database import Database
 from bot.handlers import build_router
-from bot.storage import UserStateStore
 
 
 async def _run() -> None:
@@ -26,20 +26,22 @@ async def _run() -> None:
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(parse_mode=None),
     )
+    me = await bot.get_me()
+    bot_username = me.username or ""
+
     ai = AIClient(api_key=settings.codex_sale_api_key, base_url=settings.codex_sale_base_url)
-    store = UserStateStore(
-        default_model=settings.default_chat_model,
-        max_history_messages=settings.max_history_messages,
-    )
+    db = Database(settings.database_path)
+    await db.connect()
 
     dp = Dispatcher()
-    dp.include_router(build_router(settings, ai, store))
+    dp.include_router(build_router(settings, ai, db, bot_username))
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
         await ai.close()
+        await db.close()
         await bot.session.close()
 
 

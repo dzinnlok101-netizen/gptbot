@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "aiogram>=3.4,<4.0",
+    "aiosqlite>=0.20",
     "openai>=1.40,<2.0",
     "python-dotenv>=1.0",
     "pydantic>=2.5",

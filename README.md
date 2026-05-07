@@ -1,97 +1,100 @@
-# gptbot
+# GPTBot
 
-Telegram-бот с ChatGPT через провайдера [Codex Sale](https://codex.sale) (OpenAI-совместимый API).
+Telegram-бот с ChatGPT (через OpenAI-совместимый провайдер
+[Codex Sale](https://codex.sale)) и встроенной монетизацией: триал →
+подписка на канал → оплата за Telegram Stars (XTR).
 
 ## Возможности
 
-- Диалог с моделью (история сохраняется в памяти на каждого пользователя).
-- Генерация картинок через `gpt-image-2`.
-- Переключение модели на лету (через инлайн-клавиатуру).
-- Опциональное ограничение доступа по списку Telegram user-id.
+- Чат с моделью на базе GPT (по умолчанию `gpt-5.5`), история диалога per-user.
+- Генерация картинок через `gpt-image-2`: `/image <описание>`.
+- Триал: каждый новый пользователь получает 5 текстовых запросов и 1
+  картинку бесплатно.
+- Бонус за подписку на канал (например, `@investor_giftov`): +20 текст и
+  +3 картинки. Проверка подписки через `getChatMember`.
+- Оплата за Telegram Stars: пакеты на 100/300/1000 ⭐, в т.ч. безлимит
+  на 30 дней.
+- Реферальная программа: за каждого нового пользователя по ссылке
+  `t.me/<bot>?start=ref_<id>` рефереру начисляются бонусные запросы.
+- Админские команды для владельца: `/stats`, `/grant`.
+- SQLite-хранилище: ничего не теряется при рестарте.
 
-### Команды
+## Команды
 
-| Команда | Что делает |
+| Команда | Описание |
 | --- | --- |
-| `/start`, `/help` | Приветствие и список команд |
+| `/start` | Главное меню, регистрация (поддерживает `?start=ref_<id>`) |
+| `/help` | Список команд |
+| `/profile` | Лимиты, активная подписка, число рефералов |
+| `/buy` | Купить пакет за ⭐ Stars |
+| `/ref` | Получить реферальную ссылку |
+| `/model` | Сменить модель (инлайн-кнопки) |
 | `/reset` | Очистить историю диалога |
-| `/model` | Выбрать модель (gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex) |
 | `/image <описание>` | Сгенерировать картинку |
+| `/stats` | (admin) Общая статистика |
+| `/grant <user_id> <pack_id>` | (admin) Выдать пакет пользователю |
 
-## Стек
+## Установка и запуск
 
-- Python 3.11+
-- [aiogram 3](https://docs.aiogram.dev/) — Telegram Bot API
-- [openai](https://github.com/openai/openai-python) — клиент OpenAI-совместимого API
-- [uv](https://docs.astral.sh/uv/) (рекомендуется) или pip — установка зависимостей
+```bash
+# Клонировать
+git clone https://github.com/dzinnlok101-netizen/gptbot.git
+cd gptbot
 
-## Локальный запуск
+# Настроить env (заполните минимум TELEGRAM_BOT_TOKEN и CODEX_SALE_API_KEY)
+cp .env.example .env
 
-1. Создайте бота у [@BotFather](https://t.me/BotFather) и получите токен.
-2. Получите API-ключ Codex Sale на [codex.sale](https://codex.sale).
-3. Скопируйте `.env.example` в `.env` и заполните значения:
+# Установить зависимости (рекомендуется uv)
+uv sync
 
-   ```bash
-   cp .env.example .env
-   # отредактируйте .env
-   ```
+# Запустить
+uv run gptbot
+```
 
-4. Установите зависимости и запустите:
+## Архитектура
 
-   ```bash
-   # вариант с uv (рекомендуется)
-   uv sync
-   uv run gptbot
+```
+bot/
+├── __main__.py        — точка входа, бутстрап Bot/Dispatcher
+├── config.py          — все настройки из ENV (Settings, StarPack)
+├── database.py        — SQLite (users / history / purchases)
+├── entitlements.py    — логика лимитов, подписки, инвойсов
+├── ai_client.py       — обёртка OpenAI AsyncClient (chat + image)
+└── handlers.py        — все aiogram-хендлеры
+```
 
-   # или с pip
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -e .
-   gptbot
-   ```
+База хранится в файле `gptbot.db` (путь настраивается через
+`DATABASE_PATH`). Схема создаётся автоматически при первом запуске.
 
-Бот запустится в режиме long-polling и начнёт принимать сообщения.
+## Настройка канала и админа
 
-## Переменные окружения
+1. Создайте канал, в который хотите гнать пользователей (например, у вас
+   уже есть `https://t.me/investor_giftov`).
+2. **Добавьте бота администратором** этого канала (с минимальными
+   правами — достаточно «Add Subscribers»). Без этого `getChatMember`
+   будет возвращать ошибку, и бонус не зачислится.
+3. Узнайте свой Telegram user-id (например, через `/profile` после
+   первого `/start` — id отображается в логах бота, либо через
+   `@userinfobot`) и впишите в `ADMIN_USER_IDS=...`.
 
-| Переменная | Обязательная | По умолчанию | Описание |
-| --- | --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | да | — | Токен от @BotFather |
-| `CODEX_SALE_API_KEY` | да | — | API-ключ Codex Sale |
-| `CODEX_SALE_BASE_URL` | нет | `https://codex.sale/v1` | Endpoint провайдера |
-| `DEFAULT_CHAT_MODEL` | нет | `gpt-5.5` | Модель по умолчанию |
-| `DEFAULT_IMAGE_MODEL` | нет | `gpt-image-2` | Модель для `/image` |
-| `SYSTEM_PROMPT` | нет | `You are a helpful assistant. Answer concisely.` | Системный промпт |
-| `MAX_HISTORY_MESSAGES` | нет | `20` | Сколько сообщений хранить в истории на пользователя |
-| `ALLOWED_USER_IDS` | нет | пусто (все) | Список user-id через запятую |
+## Telegram Stars
 
-## Тесты и линтер
+- Платежи проходят через нативный Telegram Stars (валюта `XTR`).
+  `provider_token` для них пустой.
+- В `pre_checkout_query` валидируется payload и существование пакета.
+- В `successful_payment` пакет начисляется атомарно и сохраняется в
+  таблице `purchases` для админской статистики.
+
+## Тесты
 
 ```bash
 uv run ruff check .
 uv run pytest -q
 ```
 
-## Деплой
+## Безопасность
 
-Простейший вариант — запустить бота на любой VPS под systemd или в Docker.
-Бот использует long-polling, поэтому ему не нужен публичный URL и webhook.
-
-Пример минимального `Dockerfile`:
-
-```Dockerfile
-FROM python:3.12-slim
-WORKDIR /app
-COPY . .
-RUN pip install --no-cache-dir -e .
-CMD ["gptbot"]
-```
-
-```bash
-docker build -t gptbot .
-docker run --rm --env-file .env gptbot
-```
-
-## Лицензия
-
-MIT (см. `LICENSE`, если добавите).
+- Никаких ключей в коде. Все секреты — только в `.env` (не коммитить!) и
+  через переменные окружения.
+- При компрометации API-ключа Codex Sale — выпустите новый и отзовите
+  старый в личном кабинете.

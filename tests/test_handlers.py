@@ -1,4 +1,4 @@
-from bot.handlers import _split_message
+from bot.handlers import _parse_referrer, _split_message
 
 
 def test_split_short_message() -> None:
@@ -17,3 +17,14 @@ def test_split_long_message_no_separator() -> None:
     chunks = _split_message(text, limit=100)
     assert all(len(c) <= 100 for c in chunks)
     assert "".join(chunks) == text
+
+
+def test_parse_referrer_valid() -> None:
+    assert _parse_referrer("ref_42") == 42
+
+
+def test_parse_referrer_invalid() -> None:
+    assert _parse_referrer(None) is None
+    assert _parse_referrer("") is None
+    assert _parse_referrer("ref_abc") is None
+    assert _parse_referrer("foo") is None

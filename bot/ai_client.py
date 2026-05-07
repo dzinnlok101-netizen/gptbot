@@ -8,7 +8,7 @@ from collections.abc import Iterable
 
 from openai import AsyncOpenAI
 
-from bot.storage import Message
+from bot.database import HistoryRow
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class AIClient:
         *,
         model: str,
         system_prompt: str,
-        history: Iterable[Message],
+        history: Iterable[HistoryRow],
     ) -> str:
         """Send a chat completion request and return the assistant's reply text."""
         messages: list[dict[str, str]] = []

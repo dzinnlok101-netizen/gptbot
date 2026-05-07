@@ -31,6 +31,12 @@ Thumbs.db
 # Logs
 *.log
 
+# SQLite database
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
 # uv / pip caches
 .uv-cache/
 .cache/
@@ -41,3 +47,4 @@ Thumbs.db
 .mypy_cache/
 .coverage
 htmlcov/
+uv.lock
