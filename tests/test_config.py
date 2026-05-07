@@ -47,10 +47,11 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         "DEFAULT_IMAGE_MODEL",
         "ALLOWED_USER_IDS",
         "ADMIN_USER_IDS",
-        "CHANNEL_USERNAME",
-        "CHANNEL_URL",
     ):
         monkeypatch.delenv(name, raising=False)
+    # Empty string to override any .env file that might be present in cwd.
+    monkeypatch.setenv("CHANNEL_USERNAME", "")
+    monkeypatch.setenv("CHANNEL_URL", "")
     s = Settings.from_env()
     assert s.default_chat_model == "gpt-5.5"
     assert s.default_image_model == "gpt-image-2"
@@ -95,9 +96,11 @@ def test_channel_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_pack_overrides_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
     monkeypatch.setenv("CODEX_SALE_API_KEY", "k")
-    monkeypatch.setenv("STAR_PACKS_SMALL_STARS", "50")
-    monkeypatch.setenv("STAR_PACKS_SMALL_TEXT", "60")
+    # Override values that differ from current defaults so we verify the override
+    # mechanism (not just defaults coincidentally matching).
+    monkeypatch.setenv("STAR_PACKS_SMALL_STARS", "77")
+    monkeypatch.setenv("STAR_PACKS_SMALL_TEXT", "999")
     s = Settings.from_env()
     small = next(p for p in s.star_packs if p.pack_id == "small")
-    assert small.stars == 50
-    assert small.text_credits == 60
+    assert small.stars == 77
+    assert small.text_credits == 999

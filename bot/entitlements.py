@@ -68,20 +68,25 @@ async def claim_channel_bonus(
 
 def format_profile(user: User, settings: Settings) -> str:
     """Pretty-print profile information for /profile."""
-    lines: list[str] = ["<b>👤 Профиль</b>", ""]
+    name = user.first_name or user.username or "друг"
+    lines: list[str] = [f"👤 <b>Профиль — {name}</b>", "━━━━━━━━━━━━━━━"]
     if has_unlimited(user):
         until = time.strftime("%d.%m.%Y %H:%M", time.localtime(user.unlimited_until))  # type: ignore[arg-type]
-        lines.append(f"⭐ Безлимит до <b>{until}</b>")
+        lines.append("💎 <b>Безлимит активен</b>")
+        lines.append(f"   до {until}")
     else:
-        lines.append(f"💬 Текстовые запросы: <b>{user.text_credits}</b>")
-        lines.append(f"🖼 Картинки: <b>{user.image_credits}</b>")
+        lines.append(f"💬 Текстовые запросы:  <b>{user.text_credits}</b>")
+        lines.append(f"🖼 Картинки:           <b>{user.image_credits}</b>")
 
+    lines.append("")
     lines.append(f"🤖 Модель: <b>{user.current_model}</b>")
-    lines.append(f"👥 Приглашено: <b>{user.ref_count}</b>")
+    lines.append(f"👥 Приглашено друзей: <b>{user.ref_count}</b>")
     if settings.channel_enabled and not user.channel_bonus_claimed:
+        lines.append("")
         lines.append(
-            f"\n🎁 Подпишись на @{settings.channel_username} и получи "
-            f"+{settings.channel_bonus_text} текст и +{settings.channel_bonus_image} картинок"
+            f"🎁 <b>Бонус ждёт тебя!</b> Подпишись на @{settings.channel_username} "
+            f"и получи +{settings.channel_bonus_text} текстов и "
+            f"+{settings.channel_bonus_image} картинки."
         )
     return "\n".join(lines)
 

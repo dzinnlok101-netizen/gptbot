@@ -39,16 +39,19 @@ logger = logging.getLogger(__name__)
 
 
 HELP_TEXT = (
-    "<b>Привет!</b> Я ChatGPT-бот.\n\n"
-    "Просто пришли мне сообщение — я отвечу.\n\n"
-    "<b>Команды:</b>\n"
-    "/start — главное меню\n"
-    "/profile — мои лимиты и подписки\n"
-    "/buy — купить пакет за ⭐ Stars\n"
-    "/ref — реферальная ссылка\n"
-    "/model — сменить модель\n"
-    "/reset — очистить историю диалога\n"
-    "/image &lt;описание&gt; — сгенерировать картинку"
+    "✨ <b>Добро пожаловать!</b>\n"
+    "Я — ChatGPT-бот: отвечаю на любые вопросы и рисую картинки 🎨\n\n"
+    "🎁 <b>Бесплатный старт:</b> 5 текстов + 1 картинка\n"
+    "📢 За подписку на канал — ещё <b>+20 текстов и +3 картинки</b>\n"
+    "⭐ Когда захочется больше — пакеты от 50 Stars\n\n"
+    "<b>Команды</b>\n"
+    "💬 просто пиши сообщение — я отвечу\n"
+    "🖼 /image &lt;описание&gt; — сгенерировать картинку\n"
+    "👤 /profile — мой баланс и подписка\n"
+    "💎 /buy — купить пакет за Stars\n"
+    "👥 /ref — позвать друзей и получить бонус\n"
+    "🤖 /model — сменить модель GPT\n"
+    "♻️ /reset — очистить историю диалога"
 )
 
 
@@ -90,13 +93,13 @@ def _no_credits_keyboard(settings: Settings, *, image: bool) -> InlineKeyboardMa
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="✅ Я подписался — забрать бонус",
+                    text="🎁 Я подписался — забрать бонус",
                     callback_data="claim_channel",
                 )
             ]
         )
     rows.append(
-        [InlineKeyboardButton(text="⭐ Купить за Stars", callback_data="show_buy")]
+        [InlineKeyboardButton(text="⭐ Купить пакет", callback_data="show_buy")]
     )
     rows.append(
         [InlineKeyboardButton(text="👥 Позвать друзей (+бонус)", callback_data="show_ref")]
@@ -106,6 +109,58 @@ def _no_credits_keyboard(settings: Settings, *, image: bool) -> InlineKeyboardMa
 
 def _ref_link(bot_username: str, user_id: int) -> str:
     return f"https://t.me/{bot_username}?start=ref_{user_id}"
+
+
+def _buy_intro_text(settings: Settings) -> str:
+    lines = [
+        "💎 <b>Магазин пакетов</b>",
+        "",
+        "Оплата идёт через Telegram Stars — это нативная встроенная оплата.",
+        "",
+    ]
+    for p in settings.star_packs:
+        lines.append(f"<b>{p.title}</b> — {p.stars} ⭐")
+        lines.append(f"  └ {p.description}")
+        lines.append("")
+    lines.append("Выбирай пакет ниже 👇")
+    return "\n".join(lines)
+
+
+def _out_of_text_message(settings: Settings) -> str:
+    lines = [
+        "💬 <b>Бесплатные текстовые запросы закончились!</b>",
+        "",
+        "Как продолжить:",
+    ]
+    if settings.channel_enabled:
+        lines.append(
+            f"📢 Подпишись на @{settings.channel_username} и забери "
+            f"<b>+{settings.channel_bonus_text} текстов</b> и "
+            f"<b>+{settings.channel_bonus_image} картинки</b> бесплатно"
+        )
+    lines.append("⭐ Купи пакет — самый дешёвый от 50 Stars")
+    lines.append(
+        f"👥 Позови друга — получишь "
+        f"+{settings.referral_bonus_text} текст и "
+        f"+{settings.referral_bonus_image} картинка"
+    )
+    return "\n".join(lines)
+
+
+def _out_of_image_message(settings: Settings) -> str:
+    lines = [
+        "🖼 <b>Бесплатные картинки закончились!</b>",
+        "",
+        "Как получить ещё:",
+    ]
+    if settings.channel_enabled:
+        lines.append(
+            f"📢 Подпишись на @{settings.channel_username} → "
+            f"<b>+{settings.channel_bonus_image} картинки</b> и "
+            f"+{settings.channel_bonus_text} текстов"
+        )
+    lines.append("⭐ Купи пакет — стартовый всего 50 Stars")
+    return "\n".join(lines)
 
 
 def _parse_referrer(start_payload: str | None) -> int | None:
@@ -186,11 +241,11 @@ def build_router(
         user, _ = await _ensure_user(message)
         link = _ref_link(bot_username, user.user_id)
         await message.answer(
-            "👥 <b>Реферальная программа</b>\n\n"
-            f"Поделись ссылкой — за каждого нового пользователя ты получаешь "
-            f"+{settings.referral_bonus_text} текст и +{settings.referral_bonus_image} картинок.\n\n"
-            f"Твоя ссылка: <code>{escape(link)}</code>\n"
-            f"Приглашено: <b>{user.ref_count}</b>",
+            "👥 <b>Позови друзей — получи бонус</b>\n\n"
+            f"За каждого нового друга, кто придёт по твоей ссылке, тебе начислится\n"
+            f"✨ <b>+{settings.referral_bonus_text} текстовых запросов</b> и <b>+{settings.referral_bonus_image} картинка</b>.\n\n"
+            f"🔗 Твоя ссылка:\n<code>{escape(link)}</code>\n\n"
+            f"👫 Уже приглашено: <b>{user.ref_count}</b>",
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
@@ -232,8 +287,7 @@ def build_router(
             return
         await _ensure_user(message)
         await message.answer(
-            "⭐ <b>Купить пакет</b>\n\n"
-            "Оплата через Telegram Stars. Выбирай пакет:",
+            _buy_intro_text(settings),
             reply_markup=_buy_keyboard(settings.star_packs),
             parse_mode="HTML",
         )
@@ -245,7 +299,7 @@ def build_router(
             return
         await callback.answer()
         await callback.message.answer(
-            "⭐ <b>Купить пакет</b>\nВыбирай пакет:",
+            _buy_intro_text(settings),
             reply_markup=_buy_keyboard(settings.star_packs),
             parse_mode="HTML",
         )
@@ -261,8 +315,11 @@ def build_router(
         await callback.answer()
         link = _ref_link(bot_username, callback.from_user.id)
         await callback.message.answer(
-            f"Твоя ссылка:\n<code>{escape(link)}</code>",
+            "👥 <b>Твоя реферальная ссылка</b>\n\n"
+            f"<code>{escape(link)}</code>\n\n"
+            f"За каждого друга — +{settings.referral_bonus_text} текст и +{settings.referral_bonus_image} картинка ✨",
             parse_mode="HTML",
+            disable_web_page_preview=True,
         )
 
     @router.callback_query(F.data.startswith("buy:"))
@@ -328,8 +385,12 @@ def build_router(
             unlimited_days=pack.unlimited_days,
             telegram_payment_charge_id=sp.telegram_payment_charge_id,
         )
-        thanks = f"✅ Оплата прошла. Начислено:\n{pack.description}\n\nСпасибо!"
-        await message.answer(thanks)
+        await message.answer(
+            "🎉 <b>Оплата прошла!</b>\n\n"
+            f"Начислено: {pack.description}.\n"
+            "Спасибо — посмотреть баланс можно в /profile.",
+            parse_mode="HTML",
+        )
 
     # --------- channel bonus ---------
 
@@ -433,8 +494,9 @@ def build_router(
             return
         if not can_send_image(user):
             await message.answer(
-                "🖼 У тебя кончились бесплатные картинки.\nКак получить ещё:",
+                _out_of_image_message(settings),
                 reply_markup=_no_credits_keyboard(settings, image=True),
+                parse_mode="HTML",
             )
             return
         await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
@@ -461,8 +523,9 @@ def build_router(
         user, _ = await _ensure_user(message)
         if not can_send_text(user):
             await message.answer(
-                "💬 У тебя кончились бесплатные запросы.\nКак продолжить:",
+                _out_of_text_message(settings),
                 reply_markup=_no_credits_keyboard(settings, image=False),
+                parse_mode="HTML",
             )
             return
 
@@ -495,7 +558,8 @@ def build_router(
         fresh = await db.get_user(user_id)
         if fresh and not has_unlimited(fresh) and fresh.text_credits == 0:
             await message.answer(
-                "ℹ️ Это был последний бесплатный запрос. Дальше — за подписку или ⭐.",
+                "🔚 Это был последний бесплатный запрос.\n"
+                "Подпишись на канал или выбери пакет — и продолжаем 🚀",
                 reply_markup=_no_credits_keyboard(settings, image=False),
             )
         _ = time.time  # keep import warm for future use
