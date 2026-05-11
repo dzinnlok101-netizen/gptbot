@@ -122,8 +122,11 @@ class Settings:
     codex_sale_base_url: str = "https://codex.sale/v1"
     default_chat_model: str = "gpt-5.5"
     default_image_model: str = "gpt-image-2"
+    transcription_model: str = "whisper-1"
+    vision_model: str = ""  # falls back to default_chat_model when empty
     system_prompt: str = "You are a helpful assistant. Answer concisely."
     max_history_messages: int = 20
+    streaming_enabled: bool = True
     allowed_user_ids: frozenset[int] = field(default_factory=frozenset)
     admin_user_ids: frozenset[int] = field(default_factory=frozenset)
 
@@ -136,6 +139,8 @@ class Settings:
     channel_bonus_image: int = 3
     referral_bonus_text: int = 10
     referral_bonus_image: int = 1
+    daily_bonus_text: int = 3
+    daily_bonus_image: int = 0
     star_packs: tuple[StarPack, ...] = field(default_factory=lambda: DEFAULT_STAR_PACKS)
     database_path: str = "gptbot.db"
 
@@ -181,16 +186,22 @@ class Settings:
         if not channel_url_raw and channel_username:
             channel_url_raw = f"https://t.me/{channel_username}"
 
+        streaming = _env_str("STREAMING_ENABLED", "1").lower()
+        streaming_enabled = streaming in ("1", "true", "yes", "on")
+
         return cls(
             telegram_bot_token=token,
             codex_sale_api_key=api_key,
             codex_sale_base_url=_env_str("CODEX_SALE_BASE_URL", "https://codex.sale/v1"),
             default_chat_model=chat_model,
             default_image_model=image_model,
+            transcription_model=_env_str("TRANSCRIPTION_MODEL", "whisper-1"),
+            vision_model=_env_str("VISION_MODEL", ""),
             system_prompt=_env_str(
                 "SYSTEM_PROMPT", "You are a helpful assistant. Answer concisely."
             ),
             max_history_messages=max_history,
+            streaming_enabled=streaming_enabled,
             allowed_user_ids=_parse_user_ids(os.environ.get("ALLOWED_USER_IDS")),
             admin_user_ids=_parse_user_ids(os.environ.get("ADMIN_USER_IDS")),
             trial_text_credits=_env_int("TRIAL_TEXT_CREDITS", 5),
@@ -201,6 +212,8 @@ class Settings:
             channel_bonus_image=_env_int("CHANNEL_BONUS_IMAGE", 3),
             referral_bonus_text=_env_int("REFERRAL_BONUS_TEXT", 10),
             referral_bonus_image=_env_int("REFERRAL_BONUS_IMAGE", 1),
+            daily_bonus_text=_env_int("DAILY_BONUS_TEXT", 3),
+            daily_bonus_image=_env_int("DAILY_BONUS_IMAGE", 0),
             star_packs=_packs_from_env(),
             database_path=_env_str("DATABASE_PATH", "gptbot.db"),
         )
@@ -216,3 +229,7 @@ class Settings:
     @property
     def channel_enabled(self) -> bool:
         return bool(self.channel_username)
+
+    @property
+    def effective_vision_model(self) -> str:
+        return self.vision_model or self.default_chat_model
