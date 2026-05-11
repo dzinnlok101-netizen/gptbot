@@ -1,8 +1,12 @@
 """SQLite persistence layer.
 
-Stores users, conversation history, and Star purchases. Data Access Layer
-functions are intentionally thin — business logic lives in
+Stores users, conversation history, Star purchases, promo codes and their
+redemptions. DAL functions are intentionally thin — business logic lives in
 ``bot/entitlements.py`` and ``bot/handlers.py``.
+
+Schema is created on first connect; missing columns are added on every
+connect via ``_run_migrations`` so old databases keep working after an
+upgrade.
 """
 
 from __future__ import annotations
@@ -17,6 +21,9 @@ import aiosqlite
 Role = Literal["system", "user", "assistant"]
 
 
+# Initial table DDL — idempotent CREATE TABLE IF NOT EXISTS, safe to run on
+# both fresh and existing databases. Indexes that reference migrated columns
+# are created AFTER migrations run; see INDEX_DDL below.
 SCHEMA = [
     """
     CREATE TABLE IF NOT EXISTS users (
@@ -30,19 +37,23 @@ SCHEMA = [
         current_model         TEXT    NOT NULL,
         referrer_id           INTEGER,
         ref_count             INTEGER NOT NULL DEFAULT 0,
-        created_at            INTEGER NOT NULL
+        created_at            INTEGER NOT NULL,
+        persona               TEXT    NOT NULL DEFAULT 'assistant',
+        custom_persona        TEXT,
+        current_chat_id       INTEGER NOT NULL DEFAULT 1,
+        last_daily_at         INTEGER
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS history (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id    INTEGER NOT NULL,
+        chat_id    INTEGER NOT NULL DEFAULT 1,
         role       TEXT NOT NULL,
         content    TEXT NOT NULL,
         created_at INTEGER NOT NULL
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_history_user ON history(user_id, id)",
     """
     CREATE TABLE IF NOT EXISTS purchases (
         id                          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,7 +67,47 @@ SCHEMA = [
         created_at                  INTEGER NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS promo_codes (
+        code           TEXT PRIMARY KEY,
+        text_credits   INTEGER NOT NULL DEFAULT 0,
+        image_credits  INTEGER NOT NULL DEFAULT 0,
+        unlimited_days INTEGER NOT NULL DEFAULT 0,
+        max_uses       INTEGER NOT NULL DEFAULT 0,
+        uses           INTEGER NOT NULL DEFAULT 0,
+        expires_at     INTEGER,
+        created_at     INTEGER NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS promo_redemptions (
+        user_id     INTEGER NOT NULL,
+        code        TEXT NOT NULL,
+        redeemed_at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, code)
+    )
+    """,
 ]
+
+# Indexes are created after migrations so newly added columns exist.
+INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_history_user ON history(user_id, id)",
+    "CREATE INDEX IF NOT EXISTS idx_history_user_chat ON history(user_id, chat_id, id)",
+)
+
+
+# Column additions to apply when upgrading an existing database. The DAL
+# tolerates the columns being missing in old rows because new columns have
+# defaults.
+USER_COLUMN_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("persona", "TEXT NOT NULL DEFAULT 'assistant'"),
+    ("custom_persona", "TEXT"),
+    ("current_chat_id", "INTEGER NOT NULL DEFAULT 1"),
+    ("last_daily_at", "INTEGER"),
+)
+HISTORY_COLUMN_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("chat_id", "INTEGER NOT NULL DEFAULT 1"),
+)
 
 
 @dataclass(slots=True)
@@ -72,6 +123,10 @@ class User:
     referrer_id: int | None
     ref_count: int
     created_at: int
+    persona: str = "assistant"
+    custom_persona: str | None = None
+    current_chat_id: int = 1
+    last_daily_at: int | None = None
 
 
 @dataclass(slots=True)
@@ -96,11 +151,23 @@ class Purchase:
     created_at: int
 
 
+@dataclass(slots=True)
+class PromoCode:
+    code: str
+    text_credits: int
+    image_credits: int
+    unlimited_days: int
+    max_uses: int  # 0 = unlimited
+    uses: int
+    expires_at: int | None
+    created_at: int
+
+
 class Database:
     """Thin async wrapper around aiosqlite.
 
-    A single connection is reused; aiogram dispatches requests on a single
-    event loop, so coarse-grained locking by SQLite itself is sufficient.
+    A single connection is reused; aiogram dispatches on a single event
+    loop, so coarse-grained locking by SQLite itself is sufficient.
     """
 
     def __init__(self, path: str) -> None:
@@ -115,7 +182,27 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys = ON")
         for stmt in SCHEMA:
             await self._conn.execute(stmt)
+        await self._run_migrations()
+        for stmt in INDEX_DDL:
+            await self._conn.execute(stmt)
         await self._conn.commit()
+
+    async def _run_migrations(self) -> None:
+        assert self._conn is not None
+        await self._add_missing_columns("users", USER_COLUMN_MIGRATIONS)
+        await self._add_missing_columns("history", HISTORY_COLUMN_MIGRATIONS)
+
+    async def _add_missing_columns(
+        self, table: str, migrations: tuple[tuple[str, str], ...]
+    ) -> None:
+        assert self._conn is not None
+        existing: set[str] = set()
+        async with self._conn.execute(f"PRAGMA table_info({table})") as cur:
+            async for row in cur:
+                existing.add(row["name"])
+        for name, ddl in migrations:
+            if name not in existing:
+                await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -148,7 +235,7 @@ class Database:
         trial_image: int,
         referrer_id: int | None = None,
     ) -> tuple[User, bool]:
-        """Return (user, created)."""
+        """Return ``(user, created)``."""
         existing = await self.get_user(user_id)
         if existing is not None:
             # Refresh username/first_name in case they changed.
@@ -194,6 +281,15 @@ class Database:
     async def set_model(self, user_id: int, model: str) -> None:
         await self.conn.execute(
             "UPDATE users SET current_model = ? WHERE user_id = ?", (model, user_id)
+        )
+        await self.conn.commit()
+
+    async def set_persona(
+        self, user_id: int, persona: str, custom: str | None = None
+    ) -> None:
+        await self.conn.execute(
+            "UPDATE users SET persona = ?, custom_persona = ? WHERE user_id = ?",
+            (persona, custom, user_id),
         )
         await self.conn.commit()
 
@@ -274,35 +370,130 @@ class Database:
         await self.conn.commit()
         return (cur.rowcount or 0) > 0
 
-    # ---------- history ----------
+    async def claim_daily_bonus(
+        self, user_id: int, *, text: int, image: int, cooldown_seconds: int
+    ) -> tuple[bool, int]:
+        """Claim a daily bonus if the cooldown elapsed.
 
-    async def append_history(self, user_id: int, role: Role, content: str) -> None:
+        Returns ``(claimed, seconds_until_next)``. If not claimed, the
+        second value is how many seconds the user still has to wait.
+        """
+        user = await self.get_user(user_id)
+        if user is None:
+            return False, cooldown_seconds
+        now = int(time.time())
+        if user.last_daily_at and now - user.last_daily_at < cooldown_seconds:
+            return False, cooldown_seconds - (now - user.last_daily_at)
         await self.conn.execute(
-            "INSERT INTO history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, role, content, int(time.time())),
+            "UPDATE users SET text_credits = text_credits + ?, "
+            "image_credits = image_credits + ?, last_daily_at = ? WHERE user_id = ?",
+            (text, image, now, user_id),
+        )
+        await self.conn.commit()
+        return True, cooldown_seconds
+
+    # ---------- chats / history ----------
+
+    async def start_new_chat(self, user_id: int) -> int:
+        """Bump the user's ``current_chat_id`` and return the new id."""
+        user = await self.get_user(user_id)
+        if user is None:
+            return 1
+        new_id = user.current_chat_id + 1
+        await self.conn.execute(
+            "UPDATE users SET current_chat_id = ? WHERE user_id = ?",
+            (new_id, user_id),
+        )
+        await self.conn.commit()
+        return new_id
+
+    async def switch_chat(self, user_id: int, chat_id: int) -> bool:
+        async with self.conn.execute(
+            "SELECT 1 FROM history WHERE user_id = ? AND chat_id = ? LIMIT 1",
+            (user_id, chat_id),
+        ) as cur:
+            exists = await cur.fetchone()
+        if not exists and chat_id != 1:
+            return False
+        await self.conn.execute(
+            "UPDATE users SET current_chat_id = ? WHERE user_id = ?",
+            (chat_id, user_id),
+        )
+        await self.conn.commit()
+        return True
+
+    async def list_chats(self, user_id: int, limit: int = 20) -> list[tuple[int, str, int]]:
+        """Return ``(chat_id, first_user_message, last_activity_at)`` rows."""
+        async with self.conn.execute(
+            """
+            SELECT chat_id,
+                   COALESCE(
+                       (SELECT content FROM history h2
+                          WHERE h2.user_id = h.user_id AND h2.chat_id = h.chat_id
+                            AND h2.role = 'user'
+                          ORDER BY h2.id ASC LIMIT 1),
+                       ''
+                   ) AS first_user_msg,
+                   MAX(created_at) AS last_at
+              FROM history h
+             WHERE user_id = ?
+             GROUP BY chat_id
+             ORDER BY last_at DESC, chat_id DESC
+             LIMIT ?
+            """,
+            (user_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(r["chat_id"], r["first_user_msg"] or "", r["last_at"] or 0) for r in rows]
+
+    async def append_history(
+        self, user_id: int, role: Role, content: str, chat_id: int = 1
+    ) -> None:
+        await self.conn.execute(
+            "INSERT INTO history (user_id, chat_id, role, content, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_id, chat_id, role, content, int(time.time())),
         )
         await self.conn.commit()
 
-    async def get_recent_history(self, user_id: int, limit: int) -> list[HistoryRow]:
+    async def get_recent_history(
+        self, user_id: int, limit: int, chat_id: int = 1
+    ) -> list[HistoryRow]:
         if limit <= 0:
             return []
         async with self.conn.execute(
-            "SELECT role, content FROM history WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-            (user_id, limit),
+            "SELECT role, content FROM history "
+            "WHERE user_id = ? AND chat_id = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (user_id, chat_id, limit),
         ) as cur:
             rows = await cur.fetchall()
         # rows are newest-first; reverse to chronological order.
         return [HistoryRow(role=row["role"], content=row["content"]) for row in reversed(rows)]
 
-    async def reset_history(self, user_id: int) -> None:
-        await self.conn.execute("DELETE FROM history WHERE user_id = ?", (user_id,))
+    async def get_full_history(self, user_id: int, chat_id: int) -> list[HistoryRow]:
+        async with self.conn.execute(
+            "SELECT role, content FROM history "
+            "WHERE user_id = ? AND chat_id = ? ORDER BY id ASC",
+            (user_id, chat_id),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [HistoryRow(role=row["role"], content=row["content"]) for row in rows]
+
+    async def reset_history(self, user_id: int, chat_id: int = 1) -> None:
+        await self.conn.execute(
+            "DELETE FROM history WHERE user_id = ? AND chat_id = ?",
+            (user_id, chat_id),
+        )
         await self.conn.commit()
 
-    async def pop_last_history(self, user_id: int) -> None:
-        """Drop the most recent history row for a user (used to roll back on errors)."""
+    async def pop_last_history(self, user_id: int, chat_id: int = 1) -> None:
+        """Drop the most recent history row for a user/chat (rollback on errors)."""
         await self.conn.execute(
-            "DELETE FROM history WHERE id = (SELECT MAX(id) FROM history WHERE user_id = ?)",
-            (user_id,),
+            "DELETE FROM history WHERE id = ("
+            " SELECT MAX(id) FROM history WHERE user_id = ? AND chat_id = ?"
+            ")",
+            (user_id, chat_id),
         )
         await self.conn.commit()
 
@@ -347,6 +538,108 @@ class Database:
             rows = await cur.fetchall()
         return [_row_to_purchase(row) for row in rows]
 
+    async def total_stars_spent(self, user_id: int) -> int:
+        async with self.conn.execute(
+            "SELECT COALESCE(SUM(stars), 0) AS s FROM purchases WHERE user_id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row["s"] or 0) if row else 0
+
+    # ---------- promo ----------
+
+    async def upsert_promo(
+        self,
+        *,
+        code: str,
+        text: int,
+        image: int,
+        unlimited_days: int,
+        max_uses: int,
+        expires_at: int | None,
+    ) -> None:
+        await self.conn.execute(
+            """
+            INSERT INTO promo_codes (
+                code, text_credits, image_credits, unlimited_days,
+                max_uses, uses, expires_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(code) DO UPDATE SET
+                text_credits = excluded.text_credits,
+                image_credits = excluded.image_credits,
+                unlimited_days = excluded.unlimited_days,
+                max_uses = excluded.max_uses,
+                expires_at = excluded.expires_at
+            """,
+            (
+                code,
+                text,
+                image,
+                unlimited_days,
+                max_uses,
+                expires_at,
+                int(time.time()),
+            ),
+        )
+        await self.conn.commit()
+
+    async def get_promo(self, code: str) -> PromoCode | None:
+        async with self.conn.execute(
+            "SELECT * FROM promo_codes WHERE code = ?", (code,)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return PromoCode(
+            code=row["code"],
+            text_credits=row["text_credits"],
+            image_credits=row["image_credits"],
+            unlimited_days=row["unlimited_days"],
+            max_uses=row["max_uses"],
+            uses=row["uses"],
+            expires_at=row["expires_at"],
+            created_at=row["created_at"],
+        )
+
+    async def redeem_promo(
+        self, user_id: int, code: str
+    ) -> tuple[Literal["ok", "unknown", "expired", "exhausted", "already"], PromoCode | None]:
+        """Attempt to redeem a promo code atomically.
+
+        On success, increments ``uses``, inserts a redemption row and credits
+        the user. Returns a status string explaining the outcome and the
+        promo (when found).
+        """
+        promo = await self.get_promo(code)
+        if promo is None:
+            return "unknown", None
+        now = int(time.time())
+        if promo.expires_at and promo.expires_at < now:
+            return "expired", promo
+        if promo.max_uses and promo.uses >= promo.max_uses:
+            return "exhausted", promo
+
+        try:
+            await self.conn.execute(
+                "INSERT INTO promo_redemptions (user_id, code, redeemed_at) VALUES (?, ?, ?)",
+                (user_id, code, now),
+            )
+        except aiosqlite.IntegrityError:
+            return "already", promo
+
+        await self.conn.execute(
+            "UPDATE promo_codes SET uses = uses + 1 WHERE code = ?", (code,)
+        )
+        await self.add_credits(
+            user_id,
+            text=promo.text_credits,
+            image=promo.image_credits,
+            unlimited_seconds=promo.unlimited_days * 86400,
+        )
+        # add_credits committed; explicit commit covers the insert/update too.
+        await self.conn.commit()
+        return "ok", promo
+
     # ---------- admin ----------
 
     async def stats(self) -> dict[str, int]:
@@ -365,8 +658,18 @@ class Database:
             "messages": messages,
         }
 
+    async def top_referrers(self, limit: int = 10) -> list[User]:
+        async with self.conn.execute(
+            "SELECT * FROM users WHERE ref_count > 0 "
+            "ORDER BY ref_count DESC, created_at ASC LIMIT ?",
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_row_to_user(row) for row in rows]
+
 
 def _row_to_user(row: aiosqlite.Row) -> User:
+    keys = row.keys()
     return User(
         user_id=row["user_id"],
         username=row["username"],
@@ -379,6 +682,10 @@ def _row_to_user(row: aiosqlite.Row) -> User:
         referrer_id=row["referrer_id"],
         ref_count=row["ref_count"],
         created_at=row["created_at"],
+        persona=row["persona"] if "persona" in keys else "assistant",
+        custom_persona=row["custom_persona"] if "custom_persona" in keys else None,
+        current_chat_id=row["current_chat_id"] if "current_chat_id" in keys else 1,
+        last_daily_at=row["last_daily_at"] if "last_daily_at" in keys else None,
     )
 
 
