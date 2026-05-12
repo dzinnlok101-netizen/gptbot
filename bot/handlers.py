@@ -51,7 +51,8 @@ HELP_TEXT = (
     "💎 /buy — купить пакет за Stars\n"
     "👥 /ref — позвать друзей и получить бонус\n"
     "🤖 /model — сменить модель GPT\n"
-    "♻️ /reset — очистить историю диалога"
+    "♻️ /reset — очистить историю диалога\n"
+    "🎮 /pt — ProTanki генератор ников"
 )
 
 
@@ -480,6 +481,209 @@ def build_router(
             unlimited_seconds=pack.unlimited_days * 86400,
         )
         await message.answer(f"Выдано: {pack.title} → {target_user}")
+
+    # --------- protanki ---------
+
+    @router.message(Command("pt"))
+    async def on_pt_help(message: Message) -> None:
+        if message.from_user is None or not settings.is_user_allowed(message.from_user.id):
+            return
+        await _ensure_user(message)
+        await message.answer(
+            "\U0001f3ae <b>ProTanki — генератор ников</b>\n\n"
+            "/pt_gen — сгенерировать 20 ников\n"
+            "/pt_gen 50 — сгенерировать 50 ников\n"
+            "/pt_gen 20 animals — 20 ников из категории\n"
+            "/pt_list — все ники\n"
+            "/pt_free — свободные ники\n"
+            "/pt_reg &lt;ник&gt; — отметить зарегистрированным\n"
+            "/pt_taken &lt;ник&gt; — ник занят в игре\n"
+            "/pt_del &lt;ник&gt; — удалить ник\n"
+            "/pt_pwd &lt;пароль&gt; — задать пароль\n"
+            "/pt_stats — статистика\n"
+            "/pt_cats — категории\n\n"
+            "Категории: <code>nature animals food colors space "
+            "mythology tech weather abstract</code>",
+            parse_mode="HTML",
+        )
+
+    @router.message(Command("pt_gen"))
+    async def on_pt_gen(message: Message) -> None:
+        if message.from_user is None or not settings.is_user_allowed(message.from_user.id):
+            return
+        await _ensure_user(message)
+        from bot.protanki import ALL_CATEGORIES, find_category, generate_nicknames
+
+        text = (message.text or "").removeprefix("/pt_gen").strip()
+        parts = text.split()
+        count = 20
+        category: str | None = None
+        if parts:
+            try:
+                count = int(parts[0])
+            except ValueError:
+                category = parts[0]
+            if len(parts) > 1:
+                category = parts[1]
+        if category and category not in ALL_CATEGORIES:
+            await message.answer(
+                f"Неизвестная категория: {category}\n"
+                f"Доступные: {', '.join(ALL_CATEGORIES)}"
+            )
+            return
+        count = max(1, min(count, 200))
+
+        # Get or ask for password
+        user_id = message.from_user.id
+        existing = await db.list_protanki_nicks(user_id)
+        if existing:
+            password = existing[0].password
+        else:
+            password = "ChangeMe123"
+            await message.answer(
+                "\u26a0\ufe0f Пароль по умолчанию: <code>ChangeMe123</code>\n"
+                "Смените командой /pt_pwd &lt;пароль&gt;",
+                parse_mode="HTML",
+            )
+
+        nicks = generate_nicknames(count=count, category=category)
+        if not nicks:
+            await message.answer("Не удалось сгенерировать ники.")
+            return
+
+        pairs = [(n, find_category(n)) for n in nicks]
+        added = await db.add_protanki_nicks(user_id, password, pairs)
+
+        lines = [f"\U0001f3b2 Сгенерировано: {len(nicks)}, новых: {added}\n"]
+        for n in nicks:
+            lines.append(f"  <code>{escape(n)}</code>")
+        lines.append(f"\n\U0001f511 Пароль: <code>{escape(password)}</code>")
+        reply = "\n".join(lines)
+        for chunk in _split_message(reply, limit=4000):
+            await message.answer(chunk, parse_mode="HTML")
+
+    @router.message(Command("pt_list"))
+    async def on_pt_list(message: Message) -> None:
+        if message.from_user is None or not settings.is_user_allowed(message.from_user.id):
+            return
+        await _ensure_user(message)
+        nicks = await db.list_protanki_nicks(message.from_user.id)
+        if not nicks:
+            await message.answer("База пуста. Сначала /pt_gen")
+            return
+        lines = [f"\U0001f4cb <b>Все ники ({len(nicks)})</b>\n"]
+        for n in nicks:
+            icon = "\u2705" if n.status == "registered" else ("\u274c" if n.status == "taken" else "\u2b1c")
+            lines.append(f"{icon} <code>{escape(n.nickname)}</code> [{n.category}]")
+        lines.append(f"\n\U0001f511 Пароль: <code>{escape(nicks[0].password)}</code>")
+        reply = "\n".join(lines)
+        for chunk in _split_message(reply, limit=4000):
+            await message.answer(chunk, parse_mode="HTML")
+
+    @router.message(Command("pt_free"))
+    async def on_pt_free(message: Message) -> None:
+        if message.from_user is None or not settings.is_user_allowed(message.from_user.id):
+            return
+        await _ensure_user(message)
+        nicks = await db.list_protanki_nicks(message.from_user.id, status="free")
+        if not nicks:
+            await message.answer("Нет свободных ников. Генерируйте: /pt_gen")
+            return
+        lines = [f"\U0001f7e2 <b>Свободные ники ({len(nicks)})</b>\n"]
+        for n in nicks:
+            lines.append(f"  <code>{escape(n.nickname)}</code> [{n.category}]")
+        lines.append(f"\n\U0001f511 Пароль: <code>{escape(nicks[0].password)}</code>")
+        reply = "\n".join(lines)
+        for chunk in _split_message(reply, limit=4000):
+            await message.answer(chunk, parse_mode="HTML")
+
+    @router.message(Command("pt_reg"))
+    async def on_pt_reg(message: Message) -> None:
+        if message.from_user is None or not settings.is_user_allowed(message.from_user.id):
+            return
+        await _ensure_user(message)
+        nick = (message.text or "").removeprefix("/pt_reg").strip()
+        if not nick:
+            await message.answer("Использование: /pt_reg &lt;ник&gt;", parse_mode="HTML")
+            return
+        ok = await db.set_protanki_status(message.from_user.id, nick, "registered")
+        if ok:
+            await message.answer(f"\u2705 <code>{escape(nick)}</code> — зарегистрирован!", parse_mode="HTML")
+        else:
+            await message.answer(f"Ник <code>{escape(nick)}</code> не найден в базе.", parse_mode="HTML")
+
+    @router.message(Command("pt_taken"))
+    async def on_pt_taken(message: Message) -> None:
+        if message.from_user is None or not settings.is_user_allowed(message.from_user.id):
+            return
+        await _ensure_user(message)
+        nick = (message.text or "").removeprefix("/pt_taken").strip()
+        if not nick:
+            await message.answer("Использование: /pt_taken &lt;ник&gt;", parse_mode="HTML")
+            return
+        ok = await db.set_protanki_status(message.from_user.id, nick, "taken")
+        if ok:
+            await message.answer(f"\u274c <code>{escape(nick)}</code> — занят.", parse_mode="HTML")
+        else:
+            await message.answer(f"Ник <code>{escape(nick)}</code> не найден в базе.", parse_mode="HTML")
+
+    @router.message(Command("pt_del"))
+    async def on_pt_del(message: Message) -> None:
+        if message.from_user is None or not settings.is_user_allowed(message.from_user.id):
+            return
+        await _ensure_user(message)
+        nick = (message.text or "").removeprefix("/pt_del").strip()
+        if not nick:
+            await message.answer("Использование: /pt_del &lt;ник&gt;", parse_mode="HTML")
+            return
+        ok = await db.delete_protanki_nick(message.from_user.id, nick)
+        if ok:
+            await message.answer(f"\U0001f5d1 <code>{escape(nick)}</code> удалён.", parse_mode="HTML")
+        else:
+            await message.answer(f"Ник <code>{escape(nick)}</code> не найден.", parse_mode="HTML")
+
+    @router.message(Command("pt_pwd"))
+    async def on_pt_pwd(message: Message) -> None:
+        if message.from_user is None or not settings.is_user_allowed(message.from_user.id):
+            return
+        await _ensure_user(message)
+        pwd = (message.text or "").removeprefix("/pt_pwd").strip()
+        if not pwd:
+            await message.answer("Использование: /pt_pwd &lt;новый_пароль&gt;", parse_mode="HTML")
+            return
+        await db.set_protanki_password(message.from_user.id, pwd)
+        await message.answer(f"\U0001f511 Пароль обновлён: <code>{escape(pwd)}</code>", parse_mode="HTML")
+
+    @router.message(Command("pt_stats"))
+    async def on_pt_stats(message: Message) -> None:
+        if message.from_user is None or not settings.is_user_allowed(message.from_user.id):
+            return
+        await _ensure_user(message)
+        s = await db.protanki_stats(message.from_user.id)
+        await message.answer(
+            "\U0001f4ca <b>ProTanki — статистика</b>\n\n"
+            f"Всего ников: <b>{s['total']}</b>\n"
+            f"\U0001f7e2 Свободных: <b>{s['free']}</b>\n"
+            f"\u2705 Зарегистрированных: <b>{s['registered']}</b>\n"
+            f"\u274c Занятых: <b>{s['taken']}</b>",
+            parse_mode="HTML",
+        )
+
+    @router.message(Command("pt_cats"))
+    async def on_pt_cats(message: Message) -> None:
+        if message.from_user is None or not settings.is_user_allowed(message.from_user.id):
+            return
+        await _ensure_user(message)
+        import random as _rng
+
+        from bot.protanki import WORD_LISTS
+
+        lines = ["\U0001f4d6 <b>Категории ников</b>\n"]
+        for cat, words in WORD_LISTS.items():
+            examples = _rng.sample(words, min(4, len(words)))
+            lines.append(f"<b>{cat}</b> ({len(words)} слов)")
+            lines.append(f"  {', '.join(examples)}\n")
+        await message.answer("\n".join(lines), parse_mode="HTML")
 
     # --------- image ---------
 
