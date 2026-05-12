@@ -56,6 +56,18 @@ SCHEMA = [
         created_at                  INTEGER NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS protanki_nicks (
+        nickname    TEXT    NOT NULL,
+        user_id     INTEGER NOT NULL,
+        password    TEXT    NOT NULL,
+        category    TEXT    NOT NULL DEFAULT '',
+        status      TEXT    NOT NULL DEFAULT 'free',
+        added_at    INTEGER NOT NULL,
+        PRIMARY KEY (nickname, user_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_protanki_user ON protanki_nicks(user_id)",
 ]
 
 
@@ -347,6 +359,84 @@ class Database:
             rows = await cur.fetchall()
         return [_row_to_purchase(row) for row in rows]
 
+    # ---------- protanki ----------
+
+    async def add_protanki_nicks(
+        self,
+        user_id: int,
+        password: str,
+        nicks: list[tuple[str, str]],
+    ) -> int:
+        """Insert nicknames. *nicks* is list of (nickname, category). Returns new count."""
+        added = 0
+        for nick, cat in nicks:
+            try:
+                await self.conn.execute(
+                    "INSERT OR IGNORE INTO protanki_nicks "
+                    "(nickname, user_id, password, category, status, added_at) "
+                    "VALUES (?, ?, ?, ?, 'free', ?)",
+                    (nick, user_id, password, cat, int(time.time())),
+                )
+                added += 1
+            except Exception:  # noqa: BLE001
+                pass
+        await self.conn.commit()
+        return added
+
+    async def list_protanki_nicks(
+        self, user_id: int, status: str | None = None
+    ) -> list[ProtankiNick]:
+        if status:
+            async with self.conn.execute(
+                "SELECT * FROM protanki_nicks WHERE user_id = ? AND status = ? ORDER BY nickname",
+                (user_id, status),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with self.conn.execute(
+                "SELECT * FROM protanki_nicks WHERE user_id = ? ORDER BY nickname",
+                (user_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_protanki(r) for r in rows]
+
+    async def set_protanki_status(self, user_id: int, nickname: str, status: str) -> bool:
+        async with self.conn.execute(
+            "UPDATE protanki_nicks SET status = ? WHERE user_id = ? AND nickname = ?",
+            (status, user_id, nickname),
+        ) as cur:
+            changed = cur.rowcount > 0
+        await self.conn.commit()
+        return changed
+
+    async def delete_protanki_nick(self, user_id: int, nickname: str) -> bool:
+        async with self.conn.execute(
+            "DELETE FROM protanki_nicks WHERE user_id = ? AND nickname = ?",
+            (user_id, nickname),
+        ) as cur:
+            deleted = cur.rowcount > 0
+        await self.conn.commit()
+        return deleted
+
+    async def set_protanki_password(self, user_id: int, password: str) -> None:
+        await self.conn.execute(
+            "UPDATE protanki_nicks SET password = ? WHERE user_id = ?",
+            (password, user_id),
+        )
+        await self.conn.commit()
+
+    async def protanki_stats(self, user_id: int) -> dict[str, int]:
+        async with self.conn.execute(
+            "SELECT status, COUNT(*) as c FROM protanki_nicks WHERE user_id = ? GROUP BY status",
+            (user_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        result: dict[str, int] = {"total": 0, "free": 0, "registered": 0, "taken": 0}
+        for row in rows:
+            result[row["status"]] = row["c"]
+            result["total"] += row["c"]
+        return result
+
     # ---------- admin ----------
 
     async def stats(self) -> dict[str, int]:
@@ -364,6 +454,16 @@ class Database:
             "stars_revenue": row["s"],
             "messages": messages,
         }
+
+
+@dataclass(slots=True)
+class ProtankiNick:
+    nickname: str
+    user_id: int
+    password: str
+    category: str
+    status: str
+    added_at: int
 
 
 def _row_to_user(row: aiosqlite.Row) -> User:
@@ -393,6 +493,17 @@ def _row_to_purchase(row: aiosqlite.Row) -> Purchase:
         unlimited_days_added=row["unlimited_days_added"],
         telegram_payment_charge_id=row["telegram_payment_charge_id"],
         created_at=row["created_at"],
+    )
+
+
+def _row_to_protanki(row: aiosqlite.Row) -> ProtankiNick:
+    return ProtankiNick(
+        nickname=row["nickname"],
+        user_id=row["user_id"],
+        password=row["password"],
+        category=row["category"],
+        status=row["status"],
+        added_at=row["added_at"],
     )
 
 
